@@ -1,20 +1,23 @@
+!git clone https://github.com/rapidsai/rapidsai-csp-utils.git
+!python rapidsai-csp-utils/colab/pip-install.py
+
 import numpy as np
 import random
 import sqlite3
-from sklearn.svm import SVC
+from cuml.svm import SVC
 from sklearn import metrics
 import scipy.stats as st
 
-num_trials_per_c_value = 50
+t_input = 50
 q_input = 845813581
 n_input = 30
-h_input = 15
-num_points_train_lwe = 15000#0
-num_points_train_uniform = 15000#0
-num_points_val_lwe = 5000
-num_points_val_uniform = 5000
-num_points_test_lwe = 500#0
-num_points_test_uniform = 500#0
+h_input = 3
+num_points_train_lwe = 250000
+num_points_train_uniform = 250000
+num_points_val_lwe = 50000
+num_points_val_uniform = 50000
+num_points_test_lwe = 50000
+num_points_test_uniform = 50000
 classifications = ["lwe" for _ in range(num_points_train_lwe)] + ["uniform" for _ in range(num_points_train_uniform)]
 classifications += ["lwe" for _ in range(num_points_val_lwe)] + ["uniform" for _ in range(num_points_val_uniform)]
 classifications += ["lwe" for _ in range(num_points_test_lwe)] + ["uniform" for _ in range(num_points_test_uniform)]
@@ -53,7 +56,7 @@ def generate_data(num_trial):
         if classifications[i] == "lwe":
             b = 0
             for i in range(n_input):
-                b += int(a[i]) * int(s[i]) + round(np.random.normal(loc=0, scale=3))
+                b += round(np.random.normal(loc=0, scale=q_input / 1000))
             b = b % q_input
         else:
             b = generate_uniformly_random_list(1, q_input)[0]
@@ -110,14 +113,16 @@ def create_X_and_y(record_results, num_trial):
             y_train.append(1)
         else:
             y_train.append(0)
-    clf_list = []
-    for C_val_exponent in range(-5, 6, 1):
+    X_train_current = np.array(X_train, dtype=np.float32)
+    y_train_current = np.array(y_train, dtype=np.float32)
+    print(f"X_train_current is {X_train_current}")
+    print(f"y_train_current is {y_train_current}")
+    for C_val_exponent in range(0, 10, 1):
         C_input = 10 ** C_val_exponent
         print(f"C is {C_input}")
-        clf = SVC(C=C_input)
-        clf.fit(X_train, y_train)
+        clf = SVC(C=C_input, gamma = 10/(X_train_current.shape[1] * X_train_current.var()))
+        clf.fit(X_train_current, y_train_current)
         create_X_val_and_y_val(clf=clf, record_results=record_results, C=C_input, num_trial=num_trial)
-    return clf_list
 
 def create_X_val_and_y_val(clf, record_results, C, num_trial):
     conn = sqlite3.connect(f"data_trial_{num_trial}.db")
@@ -139,11 +144,15 @@ def create_X_val_and_y_val(clf, record_results, C, num_trial):
             y_val.append(1)
         else:
             y_val.append(0)
-    y_pred = list(clf.predict(X_val))
-    print("y_val is")
-    print(y_val[:100])
+    X_val_current = np.array(X_val, dtype=np.float32)
+    y_val_current = np.array(y_val, dtype=np.float32)
+    y_pred = list(clf.predict(X_val_current))
+    print(f"X_val_current is")
+    print(X_val_current)
+    print("y_val_current is")
+    print(y_val_current)
     print("y_pred is")
-    print(y_pred[:100])
+    print(y_pred)
     accuracy = metrics.accuracy_score(y_val, y_pred)
     f1_score = metrics.f1_score(y_val, y_pred)
     precision = metrics.precision_score(y_val, y_pred)
@@ -168,7 +177,7 @@ def train_run_and_store_results(alphas, num_trial):
     conn_results = sqlite3.connect("results.db")
     cur_results = conn_results.cursor()
     create_X_and_y(record_results=True, num_trial=num_trial)
-    for C_val_exponent in range(-5, 6, 1):
+    for C_val_exponent in range(0, 10, 1):
         C_input = 10 ** C_val_exponent
         cur_results.execute(f"SELECT accuracy FROM results WHERE c = {C_input};")
         accuracies = cur_results.fetchall()
@@ -182,7 +191,7 @@ def train_run_and_store_results(alphas, num_trial):
 def read_results(alphas):
     conn_results = sqlite3.connect("results.db")
     cur_results = conn_results.cursor()
-    for C_val_exponent in range(-5, 6, 1):
+    for C_val_exponent in range(0, 10, 1):
         C_input = 10 ** C_val_exponent
         cur_results.execute(f"SELECT accuracy FROM results WHERE c = {C_input};")
         accuracies = cur_results.fetchall()
@@ -193,17 +202,17 @@ def read_results(alphas):
     conn_results.commit()
     conn_results.close()
 
-# conn_results = sqlite3.connect("results.db")
-# cur_results = conn_results.cursor()
-# cur_results.execute("DROP TABLE IF EXISTS results;")
-# cur_results.execute(f'''CREATE TABLE results (num_trial INTEGER, h INTEGER, n INTEGER, q INTEGER, c FLOAT, num_points_train_lwe INTEGER, 
-#             num_points_train_uniform INTEGER, num_points_val_lwe INTEGER, num_points_val_uniform INTEGER, 
-#             accuracy FLOAT, f1_score FLOAT, precision FLOAT, recall FLOAT);''')
-# conn_results.commit()
-# conn_results.close()
-# for num_trial in range(num_trials_per_c_value):
-#     generate_data(num_trial=num_trial)
-#     train_run_and_store_results(alphas=[0.9, 0.95, 0.99], num_trial=num_trial)
+conn_results = sqlite3.connect("results.db")
+cur_results = conn_results.cursor()
+cur_results.execute("DROP TABLE IF EXISTS results;")
+cur_results.execute(f'''CREATE TABLE results (num_trial INTEGER, h INTEGER, n INTEGER, q INTEGER, c FLOAT, num_points_train_lwe INTEGER,
+                    num_points_train_uniform INTEGER, num_points_val_lwe INTEGER, num_points_val_uniform INTEGER,
+                    accuracy FLOAT, f1_score FLOAT, precision FLOAT, recall FLOAT);''')
+conn_results.commit()
+conn_results.close()
+for num_trial in range(t_input):
+    generate_data(num_trial=num_trial)
+    train_run_and_store_results(alphas=[0.9, 0.95, 0.99], num_trial=num_trial)
 
 read_results(alphas=[0.9, 0.95, 0.99])
 
