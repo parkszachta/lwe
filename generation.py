@@ -7,6 +7,7 @@ import sqlite3
 from cuml.svm import SVC
 from sklearn import metrics
 import scipy.stats as st
+from google.colab import files
 
 t_input = 50
 q_input = 845813581
@@ -56,7 +57,8 @@ def generate_data(num_trial):
         if classifications[i] == "lwe":
             b = 0
             for i in range(n_input):
-                b += round(np.random.normal(loc=0, scale=q_input / 1000))
+                b += int(a[i]) * int(s[i])
+            b += round(np.random.normal(loc=0, scale=q_input / 1000))
             b = b % q_input
         else:
             b = generate_uniformly_random_list(1, q_input)[0]
@@ -115,60 +117,47 @@ def create_X_and_y(record_results, num_trial):
             y_train.append(0)
     X_train_current = np.array(X_train, dtype=np.float32)
     y_train_current = np.array(y_train, dtype=np.float32)
-    print(f"X_train_current is {X_train_current}")
-    print(f"y_train_current is {y_train_current}")
     for C_val_exponent in range(0, 10, 1):
-        C_input = 10 ** C_val_exponent
-        print(f"C is {C_input}")
-        clf = SVC(C=C_input, gamma = 10/(X_train_current.shape[1] * X_train_current.var()))
-        clf.fit(X_train_current, y_train_current)
-        create_X_val_and_y_val(clf=clf, record_results=record_results, C=C_input, num_trial=num_trial)
+        for gamma_coefficient in [10 ** 0.5, 10, 10 ** 1.5]:
+            C_input = 10 ** C_val_exponent
+            clf = SVC(C=C_input, gamma = gamma_coefficient/(X_train_current.shape[1] * X_train_current.var()))
+            clf.fit(X_train_current, y_train_current)
+            create_X_test_and_y_test(clf=clf, record_results=record_results, C=C_input, gamma_coefficient=gamma_coefficient, num_trial=num_trial)
 
-def create_X_val_and_y_val(clf, record_results, C, num_trial):
+def create_X_test_and_y_test(clf, record_results, C, gamma_coefficient, num_trial):
     conn = sqlite3.connect(f"data_trial_{num_trial}.db")
     cur = conn.cursor()
-    cur.execute(f"SELECT * FROM data_trial_{num_trial} WHERE data_split = 'val';")
+    cur.execute(f"SELECT * FROM data_trial_{num_trial} WHERE data_split = 'test';")
     print()
-    X_val_and_y_val = []
+    X_test_and_y_test = []
     for row in cur.fetchall():
-        x_val = list(row[n_input + 2:len(row)])
-        y_val = [row[0]]
-        X_val_and_y_val.append(x_val + y_val)
+        x_test = list(row[n_input + 2:len(row)])
+        y_test = [row[0]]
+        X_test_and_y_test.append(x_test + y_test)
     conn.commit()
     conn.close()
-    X_val = []
-    y_val = []
-    for row in X_val_and_y_val:
-        X_val.append(row[:-1])
+    X_test = []
+    y_test = []
+    for row in X_test_and_y_test:
+        X_test.append(row[:-1])
         if row[-1] == "lwe":
-            y_val.append(1)
+            y_test.append(1)
         else:
-            y_val.append(0)
-    X_val_current = np.array(X_val, dtype=np.float32)
-    y_val_current = np.array(y_val, dtype=np.float32)
-    y_pred = list(clf.predict(X_val_current))
-    print(f"X_val_current is")
-    print(X_val_current)
-    print("y_val_current is")
-    print(y_val_current)
-    print("y_pred is")
-    print(y_pred)
-    accuracy = metrics.accuracy_score(y_val, y_pred)
-    f1_score = metrics.f1_score(y_val, y_pred)
-    precision = metrics.precision_score(y_val, y_pred)
-    recall = metrics.recall_score(y_val, y_pred)
-    print(f"Accuracy is {accuracy}")
-    print(f"f1_score is {f1_score}")
-    print(f"Precision is {precision}")
-    print(f"Recall is {recall}")
+            y_test.append(0)
+    X_test_current = np.array(X_test, dtype=np.float32)
+    y_test_current = np.array(y_test, dtype=np.float32)
+    y_pred = list(clf.predict(X_test_current))
+    accuracy = metrics.accuracy_score(y_test, y_pred)
+    f1_score = metrics.f1_score(y_test, y_pred, zero_division=0)
+    precision = metrics.precision_score(y_test, y_pred, zero_division=0)
+    recall = metrics.recall_score(y_test, y_pred, zero_division=0)
     if record_results:
         conn_results = sqlite3.connect("results.db")
         cur_results = conn_results.cursor()
-        sql_query = "INSERT INTO results (num_trial, h, n, q, c, num_points_train_lwe, num_points_train_uniform, num_points_val_lwe, "
-        sql_query += f"num_points_val_uniform, accuracy, f1_score, precision, recall) VALUES ({num_trial}, {h_input}, {n_input}, {q_input}, {C}, "
-        sql_query += f"{num_points_train_lwe}, {num_points_train_uniform}, {num_points_val_lwe}, {num_points_val_uniform}, "
+        sql_query = "INSERT INTO results (num_trial, h, n, q, c, gamma_coefficient, num_points_train_lwe, num_points_train_uniform, num_points_test_lwe, "
+        sql_query += f"num_points_test_uniform, accuracy, f1_score, precision, recall) VALUES ({num_trial}, {h_input}, {n_input}, {q_input}, {C}, {gamma_coefficient}, "
+        sql_query += f"{num_points_train_lwe}, {num_points_train_uniform}, {num_points_test_lwe}, {num_points_test_uniform}, "
         sql_query += f"{accuracy}, {f1_score}, {precision}, {recall});"
-        print(sql_query)
         cur_results.execute(sql_query)
         conn_results.commit()
         conn_results.close()
@@ -178,35 +167,67 @@ def train_run_and_store_results(alphas, num_trial):
     cur_results = conn_results.cursor()
     create_X_and_y(record_results=True, num_trial=num_trial)
     for C_val_exponent in range(0, 10, 1):
-        C_input = 10 ** C_val_exponent
-        cur_results.execute(f"SELECT accuracy FROM results WHERE c = {C_input};")
-        accuracies = cur_results.fetchall()
-        print(f"When C is {C_input}, accuracies is {accuracies}")
-        for alpha in alphas:
-            confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(accuracies), scale=st.sem(accuracies))
-            print(f"When C is {C_input}, alpha is {alpha}, confidence_interval is {confidence_interval}")
+        for gamma_coefficient in [10 ** 0.5, 10, 10 ** 1.5]:
+            C_input = 10 ** C_val_exponent
+            cur_results.execute(f"SELECT accuracy FROM results WHERE c = {C_input} AND gamma_coefficient = {gamma_coefficient};")
+            accuracies = cur_results.fetchall()
+            print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, accuracies is {accuracies}")
+            cur_results.execute(f"SELECT f1_score FROM results WHERE c = {C_input} AND gamma_coefficient = {gamma_coefficient};")
+            f1_scores = cur_results.fetchall()
+            print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, f1_scores is {f1_scores}")
+            cur_results.execute(f"SELECT precision FROM results WHERE c = {C_input} AND gamma_coefficient = {gamma_coefficient};")
+            precisions = cur_results.fetchall()
+            print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, precisions is {precisions}")
+            cur_results.execute(f"SELECT recall FROM results WHERE c = {C_input} AND gamma_coefficient = {gamma_coefficient};")
+            recalls = cur_results.fetchall()
+            print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, recalls is {recalls}")
+            for alpha in alphas:
+                confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(accuracies), scale=st.sem(accuracies))
+                print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, alpha is {alpha}, accuracies confidence_interval is {confidence_interval}")
+                confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(f1_scores), scale=st.sem(f1_scores))
+                print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, alpha is {alpha}, f1_scores confidence_interval is {confidence_interval}")
+                confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(precisions), scale=st.sem(precisions))
+                print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, alpha is {alpha}, precisions confidence_interval is {confidence_interval}")
+                confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(recalls), scale=st.sem(recalls))
+                print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, alpha is {alpha}, recalls confidence_interval is {confidence_interval}")
     conn_results.commit()
     conn_results.close()
 
 def read_results(alphas):
     conn_results = sqlite3.connect("results.db")
     cur_results = conn_results.cursor()
-    for C_val_exponent in range(0, 10, 1):
-        C_input = 10 ** C_val_exponent
-        cur_results.execute(f"SELECT accuracy FROM results WHERE c = {C_input};")
-        accuracies = cur_results.fetchall()
-        print(f"When C is {C_input}, accuracies is {accuracies}")
-        for alpha in alphas:
-            confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(accuracies), scale=st.sem(accuracies))
-            print(f"When C is {C_input}, alpha is {alpha}, confidence_interval is {confidence_interval}")
+    for C_val_exponent in range(0, 3, 1):
+        for gamma_coefficient in [10 ** 0.5, 10, 10 ** 1.5]:
+            C_input = 10 ** C_val_exponent
+            cur_results.execute(f"SELECT accuracy FROM results WHERE c = {C_input} AND gamma_coefficient = {gamma_coefficient};")
+            accuracies = cur_results.fetchall()
+            print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, accuracies is {accuracies}")
+            cur_results.execute(f"SELECT f1_score FROM results WHERE c = {C_input} AND gamma_coefficient = {gamma_coefficient};")
+            f1_scores = cur_results.fetchall()
+            print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, f1_scores is {f1_scores}")
+            cur_results.execute(f"SELECT precision FROM results WHERE c = {C_input} AND gamma_coefficient = {gamma_coefficient};")
+            precisions = cur_results.fetchall()
+            print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, precisions is {precisions}")
+            cur_results.execute(f"SELECT recall FROM results WHERE c = {C_input} AND gamma_coefficient = {gamma_coefficient};")
+            recalls = cur_results.fetchall()
+            print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, recalls is {recalls}")
+            for alpha in alphas:
+                confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(accuracies), scale=st.sem(accuracies))
+                print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, alpha is {alpha}, accuracies confidence_interval is {confidence_interval}")
+                confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(f1_scores), scale=st.sem(f1_scores))
+                print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, alpha is {alpha}, f1_scores confidence_interval is {confidence_interval}")
+                confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(precisions), scale=st.sem(precisions))
+                print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, alpha is {alpha}, precisions confidence_interval is {confidence_interval}")
+                confidence_interval = st.norm.interval(confidence=alpha, loc=np.mean(recalls), scale=st.sem(recalls))
+                print(f"When C is {C_input} and gamma_coefficient = {gamma_coefficient}, alpha is {alpha}, recalls confidence_interval is {confidence_interval}")
     conn_results.commit()
     conn_results.close()
 
 conn_results = sqlite3.connect("results.db")
 cur_results = conn_results.cursor()
 cur_results.execute("DROP TABLE IF EXISTS results;")
-cur_results.execute(f'''CREATE TABLE results (num_trial INTEGER, h INTEGER, n INTEGER, q INTEGER, c FLOAT, num_points_train_lwe INTEGER,
-                    num_points_train_uniform INTEGER, num_points_val_lwe INTEGER, num_points_val_uniform INTEGER,
+cur_results.execute(f'''CREATE TABLE results (num_trial INTEGER, h INTEGER, n INTEGER, q INTEGER, c FLOAT, gamma_coefficient FLOAT, num_points_train_lwe INTEGER,
+                    num_points_train_uniform INTEGER, num_points_test_lwe INTEGER, num_points_test_uniform INTEGER,
                     accuracy FLOAT, f1_score FLOAT, precision FLOAT, recall FLOAT);''')
 conn_results.commit()
 conn_results.close()
@@ -216,16 +237,6 @@ for num_trial in range(t_input):
 
 read_results(alphas=[0.9, 0.95, 0.99])
 
-# for each of the 50 trials
-#    pick s, A, and b values
-#    for each C value
-#        make the SVM
-#        infer with the SVM
-#        store the results
-#        read the results
-
-# for num_trial in num_trials
-#    for c in c_values
-#       get the metrics
-#       go into the data_trial_{num_trial}
-#       analyze the distributions of s, A, and b and how they interrelate to the metrics
+files.download('results.db')
+for num_trial in range(t_input):
+    files.download(f'data_trial_{num_trial}.db')
